@@ -1,0 +1,75 @@
+{
+  "bot_name": "maimai_bot",
+  "intro": "这里是机器人的帮助菜单。你可以编辑这个文件，自定义功能简介和指令列表。",
+  "footer": "发送“帮助 功能名”可以查看某个功能的详细说明。",
+  "sections": [
+    {
+      "name": "Obsidian 助手",
+      "aliases": [
+        "obsidian",
+        "ob"
+      ],
+      "summary": "查询 Obsidian 官方帮助文档和社区插件信息。",
+      "details": "适合快速查 Obsidian 用法、概念说明和插件资料。",
+      "commands": [
+        {
+          "command": "ob <问题>",
+          "description": "向 Obsidian 帮助文档提问。",
+          "example": "ob dataview 怎么筛选任务"
+        }
+      ]
+    },
+    {
+      "name": "复读 +1",
+      "aliases": [
+        "plus_one",
+        "复读"
+      ],
+      "summary": "群里连续出现两次相同消息时，机器人会跟一次。",
+      "details": "这是一个被动功能，不需要手动触发指令。",
+      "commands": []
+    },
+    {
+      "name": "maimaihelp",
+      "aliases": [
+        "舞萌功能帮助"
+      ],
+      "summary": "获取plugin_maimaidx的功能列表和使用说明。",
+      "details": "使用指令来获得详细的maimai插件帮助",
+      "commands": [
+        {
+          "command": "帮助maimaidx",
+          "description": "获取maimai插件的功能列表图片",
+          "example": "帮助maimaidx"
+        }
+      ]
+    },
+    {
+      "name": "Deadline 任务提醒",
+      "aliases": ["ddl", "deadline", "任务"],
+      "summary": "设置任务截止提醒，支持提前通知，按群聊隔离。",
+      "details": "可在任意群聊或私聊中设置任务，机器人会在截止时自动提醒。提前提醒支持 w/d/h/m/s 格式组合。时间只写日期则默认当日 00:00。",
+      "commands": [
+        {
+          "command": "添加任务 <内容> <时间> [提前提醒]",
+          "description": "添加一个新任务，时间支持 YYYY-MM-DD HH:MM、YYYY-MM-DD、MM-DD、HH:MM",
+          "example": "添加任务 交论文 2026-05-20 14:00 1d2h"
+        },
+        {
+          "command": "删除任务 <编号>",
+          "description": "删除指定任务",
+          "example": "删除任务 a1b2c3d4"
+        },
+        {
+          "command": "任务列表 / ddl列表",
+          "description": "查看自己在所有群聊和私聊中的任务",
+          "example": "ddl列表"
+        },
+        {
+          "command": "ddlhelp",
+          "description": "查看 Deadline 插件的详细帮助"
+        }
+      ]
+    }
+  ]
+}
