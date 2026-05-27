@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # Optional: OpenAI API key for Vision-based image recognition
     openai_api_key: str = ""
 
+    # Optional: DeepSeek API key for OCR + LLM-based image recognition
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_base_url: str = "https://api.deepseek.com"
+
     # Bot behaviour
     command_prefix: str = "重命名"
     pending_timeout: int = 300  # seconds

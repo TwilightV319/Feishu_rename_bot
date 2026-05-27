@@ -13,14 +13,19 @@ All extracted amounts are normalized through rename_helper.parse_amount().
 
 import base64
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional, Tuple
 
 import pdfplumber
+import pytesseract
+from PIL import Image
 
 from config import settings
 from rename_helper import parse_amount, sanitize_filename
+
+logger = logging.getLogger(__name__)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff"}
 
@@ -44,13 +49,6 @@ def extract_info(file_path: Path, original_name: str) -> Optional[Tuple[str, str
     if result is not None:
         item_name, doc_type, amount_raw = result
         return item_name, doc_type, parse_amount(amount_raw)
-
-    # --- LAST RESORT: AI only when configured and non-AI failed ---
-    if ext in IMAGE_EXTS and settings.openai_api_key:
-        result = _extract_with_openai(file_path)
-        if result is not None:
-            item_name, doc_type, amount_raw = result
-            return item_name, doc_type, parse_amount(amount_raw)
 
     return None
 
@@ -220,11 +218,125 @@ def _extract_coded_service(text: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Image extraction (NO AI by default)
+# Image extraction
 # ---------------------------------------------------------------------------
 
+def _ocr_image(path: Path) -> str:
+    """Run OCR on an image and return extracted Chinese + English text."""
+    try:
+        image = Image.open(path)
+        text = pytesseract.image_to_string(image, lang="chi_sim+eng")
+        return text.strip()
+    except Exception as exc:
+        logger.warning("OCR failed for %s: %s", path, exc)
+        return ""
+
+
+def _extract_with_deepseek(ocr_text: str, original_name: str, attempt: int = 1) -> Optional[Tuple[str, str, str]]:
+    """Call DeepSeek API to analyze OCR text and extract invoice info."""
+    if not settings.deepseek_api_key:
+        return None
+
+    try:
+        import openai
+        client = openai.OpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+        )
+
+        attempt_hint = ""
+        if attempt > 1:
+            attempt_hint = (
+                f"（注意：这是第 {attempt} 次分析，前几次结果经校验不符合要求。"
+                f"请务必仔细核对，确保 item_name 是正常的物品/服务名称或商家名称，"
+                f"避免出现乱码、APP包名、无意义字符串等）\n\n"
+            )
+
+        prompt = (
+            "以下是从一张发票或付款截图中通过OCR提取出的文字内容，以及原始文件名。"
+            "请分析并提取以下三个信息：\n\n"
+            f"{attempt_hint}"
+            f"OCR文字内容：\n{ocr_text}\n\n"
+            f"原始文件名：{original_name}\n\n"
+            "请提取：\n"
+            '1. item_name: 物品/服务名称或商家名称。如果无法识别请填"未知物品"\n'
+            '2. doc_type: 文档类型，只能是以下之一：发票、收据、付款截图。如果无法识别请填"付款截图"\n'
+            '3. amount: 金额数字，只保留数字和小数点，不要货币符号。如果无法识别请填0\n\n'
+            '请以严格JSON格式返回，不要添加任何解释或markdown标记：\n'
+            '{"item_name": "...", "doc_type": "...", "amount": "..."}'
+        )
+
+        response = client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+        )
+
+        content = response.choices[0].message.content
+        content = _clean_json_response(content)
+
+        data: dict = {}
+        if content:
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                match = re.search(r'\{[^}]*"item_name"[^}]*\}', content)
+                if match:
+                    try:
+                        data = json.loads(match.group(0))
+                    except json.JSONDecodeError:
+                        pass
+
+        item_name = data.get("item_name") or "未知物品"
+        doc_type = data.get("doc_type") or "付款截图"
+        amount = data.get("amount") or "0"
+
+        valid_types = {"发票", "收据", "付款截图"}
+        if doc_type not in valid_types:
+            doc_type = "付款截图"
+
+        amount = re.sub(r"[^\d.]", "", str(amount))
+        if not amount or amount == ".":
+            amount = "0"
+
+        return item_name, doc_type, amount
+    except Exception as exc:
+        logger.warning("DeepSeek extraction failed: %s", exc)
+        return None
+
+
+def reextract_image(path: Path, original_name: str, attempt: int = 1) -> Optional[Tuple[str, str, str]]:
+    """Re-run OCR + DeepSeek for a given image (used after validation failure)."""
+    ocr_text = _ocr_image(path)
+    if not ocr_text:
+        return None
+    return _extract_with_deepseek(ocr_text, original_name, attempt)
+
+
 def _extract_from_image(path: Path, original_name: str) -> Optional[Tuple[str, str, str]]:
-    """Purely rule-based / filename heuristic. No AI here."""
+    """
+    Image extraction strategy:
+      1. OCR + DeepSeek LLM (if key is configured)
+      2. OpenAI Vision (if key is configured)
+      3. Filename heuristic fallback
+    """
+    # 1. OCR + DeepSeek
+    if settings.deepseek_api_key:
+        ocr_text = _ocr_image(path)
+        if ocr_text:
+            result = _extract_with_deepseek(ocr_text, original_name)
+            if result is not None:
+                logger.info("DeepSeek extracted from image: %s", result)
+                return result
+
+    # 2. OpenAI Vision
+    if settings.openai_api_key:
+        result = _extract_with_openai(path)
+        if result is not None:
+            logger.info("OpenAI Vision extracted from image: %s", result)
+            return result
+
+    # 3. Filename heuristic
     return _extract_from_filename(original_name)
 
 
@@ -257,7 +369,7 @@ def _extract_from_filename(filename: str) -> Optional[Tuple[str, str, str]]:
 
     # 1. Guess doc type and remove its keyword from the name
     # Longer keywords first to avoid partial matches (e.g. "付款" inside "付款截图")
-    doc_type = "发票"
+    doc_type = "付款截图"
     doc_keywords = {
         "收据": ["receipt", "收据", "收条"],
         "付款截图": ["付款截图", "pay", "付款", "支付", "转账", "alipay", "wechat", "微信", "支付宝"],
@@ -337,7 +449,7 @@ def _extract_with_openai(path: Path) -> Optional[Tuple[str, str, str]]:
         "提取以下三个信息，并以严格JSON格式返回，不要添加任何解释或markdown标记：\n"
         "{\n"
         '  "item_name": "物品/服务名称或商家名称。如果无法识别请填未知物品",\n'
-        '  "doc_type": "文档类型，只能是以下之一：发票、收据、付款截图。如果无法识别请填发票",\n'
+        '  "doc_type": "文档类型，只能是以下之一：发票、收据、付款截图。如果无法识别请填付款截图",\n'
         '  "amount": "金额数字，只保留数字和小数点，不要货币符号。如果无法识别请填0"\n'
         "}"
     )
@@ -367,12 +479,12 @@ def _extract_with_openai(path: Path) -> Optional[Tuple[str, str, str]]:
         data = json.loads(content)
 
         item_name = data.get("item_name") or "未知物品"
-        doc_type = data.get("doc_type") or "发票"
+        doc_type = data.get("doc_type") or "付款截图"
         amount = data.get("amount") or "0"
 
         valid_types = {"发票", "收据", "付款截图"}
         if doc_type not in valid_types:
-            doc_type = "发票"
+            doc_type = "付款截图"
 
         amount = re.sub(r"[^\d.]", "", str(amount))
         if not amount or amount == ".":

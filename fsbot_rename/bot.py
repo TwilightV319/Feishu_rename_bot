@@ -29,6 +29,7 @@ User interaction flow
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -39,6 +40,7 @@ from lark_oapi.ws import Client as WSClient
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
 
+from cleanup import remove_local_file
 from config import settings
 from extractor import extract_info
 from lark_client import LarkClientWrapper
@@ -142,6 +144,76 @@ def _parse_three_params(text: str) -> Optional[tuple[str, str, str]]:
     return parts[0], parts[1], parts[2]
 
 
+def _validate_filename_with_deepseek(filename: str, original_name: str) -> bool:
+    """
+    Ask DeepSeek to judge whether the renamed filename looks reasonable.
+    Returns True if valid or if DeepSeek is not configured.
+    """
+    if not settings.deepseek_api_key:
+        return True
+
+    try:
+        import openai
+        ds_client = openai.OpenAI(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+        )
+
+        prompt = (
+            f"请判断以下文件名是否合理。\n\n"
+            f"原始文件名：{original_name}\n"
+            f"重命名后的文件名：{filename}\n\n"
+            f"请从以下两方面判断：\n"
+            f"1. 格式是否正确：应为「物品名称_文档类型_金额.扩展名」的格式；\n"
+            f"2. 物品名称部分是否看起来像正常的物品/服务名称或商家名称"
+            f"（而不是乱码、无意义字符、APP包名、ID、随机字符串等）。\n\n"
+            f"请只返回 JSON 格式，不要添加任何解释或 markdown 标记：\n"
+            f'{{"valid": true/false, "reason": "简短说明"}}'
+        )
+
+        response = ds_client.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+        )
+
+        content = response.choices[0].message.content
+        content = content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        # Robust JSON parsing fallback
+        data: dict = {}
+        if content:
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                # Try to extract the first JSON-ish object
+                match = re.search(r'\{[^}]*"valid"[^}]*\}', content)
+                if match:
+                    try:
+                        data = json.loads(match.group(0))
+                    except json.JSONDecodeError:
+                        pass
+
+        is_valid = bool(data.get("valid", True))
+        if not is_valid:
+            logger.warning(
+                "Filename validation failed for %s: %s",
+                filename,
+                data.get("reason", "unknown"),
+            )
+        return is_valid
+    except Exception as exc:
+        logger.warning("Filename validation error: %s", exc)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Core file processing
 # ---------------------------------------------------------------------------
@@ -160,21 +232,57 @@ def _process_file(
     Returns True on success.
     """
     try:
-        # 1. Build new filename and rename via rename_helper
-        new_name = build_new_filename(
-            item_name=item_name,
-            doc_type=doc_type,
-            amount=amount,
-            original_path=str(local_path),
-        )
-        renamed_path_str = rename_file(
-            original_path=str(local_path),
-            new_name=new_name,
-            output_dir=str(local_path.parent),
-            dry_run=False,
-        )
-        renamed_path = Path(renamed_path_str)
-        logger.info("Renamed via rename_helper: %s", renamed_path)
+        # 1. Rename with validation loop (max 5 attempts)
+        current_path = local_path
+        current_item, current_doc, current_amount = item_name, doc_type, amount
+        is_valid = False
+
+        for attempt in range(1, 6):
+            new_name = build_new_filename(
+                item_name=current_item,
+                doc_type=current_doc,
+                amount=current_amount,
+                original_path=str(current_path),
+            )
+            renamed_path_str = rename_file(
+                original_path=str(current_path),
+                new_name=new_name,
+                output_dir=str(local_path.parent),
+                dry_run=False,
+            )
+            renamed_path = Path(renamed_path_str)
+            current_path = renamed_path
+            logger.info("Renamed (attempt %d): %s", attempt, renamed_path)
+
+            # Validate filename via DeepSeek
+            is_valid = _validate_filename_with_deepseek(renamed_path.name, original_name)
+            if is_valid:
+                break
+
+            if attempt < 5:
+                logger.warning(
+                    "Filename validation failed (attempt %d/5), re-extracting: %s",
+                    attempt,
+                    renamed_path.name,
+                )
+                from extractor import reextract_image
+                re_result = reextract_image(renamed_path, original_name, attempt=attempt + 1)
+                if re_result is None:
+                    break
+                current_item, current_doc, current_amount = re_result
+            else:
+                logger.error(
+                    "Filename validation failed after 5 attempts: %s",
+                    renamed_path.name,
+                )
+
+        if not is_valid:
+            client.reply_text(
+                message_id,
+                "文件自动识别失败（重试5次后仍无法确认内容），"
+                "请检查文件清晰度后重试，或手动发送：物品名称 文档类型 金额",
+            )
+            return False
 
         # 2. Look up user name
         user_name = client.get_user_name(open_id, user_id_type="open_id")
@@ -208,7 +316,10 @@ def _process_file(
             client.reply_text(message_id, "文件上传失败，请稍后重试。")
             return False
 
-        # 5. Reply success
+        # 5. Clean up local file after successful upload
+        remove_local_file(str(renamed_path))
+
+        # 6. Reply success
         client.reply_text(
             message_id,
             f"✅ 处理完成！\n"

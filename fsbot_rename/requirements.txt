@@ -1,2 +1,6 @@
 lark-oapi>=1.6.0
 pydantic-settings>=2.0.0
+pdfplumber>=0.10.0
+pytesseract>=0.3.10
+Pillow>=10.0.0
+openai>=1.0.0

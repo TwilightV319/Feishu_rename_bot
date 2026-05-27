@@ -81,6 +81,14 @@ class LarkClientWrapper:
             return None
 
         name = user.name or user.en_name or user.nickname or user_id
+        if name == user_id:
+            logger.warning(
+                "获取用户姓名失败，已使用 user_id(%s) 作为文件夹名称。"
+                "可能原因：1) 机器人缺少 contact:user.base:readonly 权限；"
+                "2) 用户未设置姓名/英文名/昵称；"
+                "3) 用户不在机器人可见范围内（外部用户/跨租户）。",
+                user_id,
+            )
         self._user_name_cache[cache_key] = name
         return name
 
