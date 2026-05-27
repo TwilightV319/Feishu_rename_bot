@@ -144,6 +144,32 @@ def _parse_three_params(text: str) -> Optional[tuple[str, str, str]]:
     return parts[0], parts[1], parts[2]
 
 
+def _detect_extension(path: Path) -> str:
+    """Detect file extension from magic bytes or PIL."""
+    # PDF check
+    try:
+        with open(path, "rb") as f:
+            header = f.read(5)
+            if header == b"%PDF-":
+                return ".pdf"
+    except Exception:
+        pass
+
+    # Image check via PIL
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            fmt_map = {
+                "JPEG": ".jpg", "PNG": ".png", "GIF": ".gif",
+                "BMP": ".bmp", "WEBP": ".webp", "TIFF": ".tiff",
+            }
+            return fmt_map.get(img.format, ".jpg")
+    except Exception:
+        pass
+
+    return ".jpg"
+
+
 def _validate_filename_with_deepseek(filename: str, original_name: str) -> bool:
     """
     Ask DeepSeek to judge whether the renamed filename looks reasonable.
@@ -164,7 +190,7 @@ def _validate_filename_with_deepseek(filename: str, original_name: str) -> bool:
             f"原始文件名：{original_name}\n"
             f"重命名后的文件名：{filename}\n\n"
             f"请从以下两方面判断：\n"
-            f"1. 格式是否正确：应为「物品名称_文档类型_金额.扩展名」的格式；\n"
+            f"1. 格式是否正确：应包含「物品名称_文档类型_金额」的核心结构（不检查扩展名）；\n"
             f"2. 物品名称部分是否看起来像正常的物品/服务名称或商家名称"
             f"（而不是乱码、无意义字符、APP包名、ID、随机字符串等）。\n\n"
             f"请只返回 JSON 格式，不要添加任何解释或 markdown 标记：\n"
@@ -174,7 +200,9 @@ def _validate_filename_with_deepseek(filename: str, original_name: str) -> bool:
         response = ds_client.chat.completions.create(
             model=settings.deepseek_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
+            max_tokens=1000,
+            temperature=0.3,
+            extra_body={"reasoning_effort": "low"},
         )
 
         content = response.choices[0].message.content
@@ -283,6 +311,16 @@ def _process_file(
                 "请检查文件清晰度后重试，或手动发送：物品名称 文档类型 金额",
             )
             return False
+
+        # 1.5 Ensure file extension is present after validation
+        SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".pdf"}
+        if renamed_path.suffix.lower() not in SUPPORTED_EXTS:
+            ext = _detect_extension(renamed_path)
+            fixed_name = renamed_path.name + ext
+            fixed_path = renamed_path.parent / fixed_name
+            renamed_path.rename(fixed_path)
+            renamed_path = fixed_path
+            logger.info("Fixed missing extension: %s", renamed_path)
 
         # 2. Look up user name
         user_name = client.get_user_name(open_id, user_id_type="open_id")

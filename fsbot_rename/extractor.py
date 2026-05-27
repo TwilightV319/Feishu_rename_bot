@@ -269,7 +269,9 @@ def _extract_with_deepseek(ocr_text: str, original_name: str, attempt: int = 1) 
         response = client.chat.completions.create(
             model=settings.deepseek_model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=300,
+            max_tokens=1000,
+            temperature=0.3,
+            extra_body={"reasoning_effort": "low"},
         )
 
         content = response.choices[0].message.content

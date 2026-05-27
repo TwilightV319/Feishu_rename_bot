@@ -41,15 +41,45 @@ def parse_amount(amount_str: str) -> str:
         return sanitize_filename(s)
 
 
+def _detect_extension_from_content(path: Path) -> str:
+    """Detect file extension from magic bytes or PIL when suffix is missing."""
+    # PDF check
+    try:
+        with open(path, "rb") as f:
+            header = f.read(5)
+            if header == b"%PDF-":
+                return ".pdf"
+    except Exception:
+        pass
+
+    # Image check via PIL
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            fmt_map = {
+                "JPEG": ".jpg", "PNG": ".png", "GIF": ".gif",
+                "BMP": ".bmp", "WEBP": ".webp", "TIFF": ".tiff",
+            }
+            return fmt_map.get(img.format, ".jpg")
+    except Exception:
+        pass
+
+    return ".jpg"
+
+
 def build_new_filename(item_name: str, doc_type: str, amount: str, original_path: str) -> str:
     """Build the new filename in format: 物品名称_发票/付款截图_金额.ext"""
     path = Path(original_path)
     ext = path.suffix.lower()
-    
+
+    # Detect extension from file content if missing
+    if not ext and path.exists():
+        ext = _detect_extension_from_content(path)
+
     safe_name = sanitize_filename(item_name)
     safe_type = sanitize_filename(doc_type)
     safe_amount = parse_amount(amount)
-    
+
     new_name = f"{safe_name}_{safe_type}_{safe_amount}{ext}"
     return new_name
 
