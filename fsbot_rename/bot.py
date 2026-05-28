@@ -26,6 +26,7 @@ User interaction flow
 4. Sessions time out after ``pending_timeout`` seconds of inactivity.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -312,8 +313,12 @@ def _process_file(
                     attempt,
                     renamed_path.name,
                 )
-                from extractor import reextract_image
-                re_result = reextract_image(renamed_path, original_name, attempt=attempt + 1)
+                if renamed_path.suffix.lower() == ".pdf":
+                    from extractor import reextract_pdf
+                    re_result = reextract_pdf(renamed_path, original_name, attempt=attempt + 1)
+                else:
+                    from extractor import reextract_image
+                    re_result = reextract_image(renamed_path, original_name, attempt=attempt + 1)
                 if re_result is None:
                     break
                 current_item, current_doc, current_amount = re_result
@@ -331,7 +336,7 @@ def _process_file(
             )
             return False
 
-        # 1.5 Ensure file extension is present after validation
+        # 2. Ensure file extension is present after validation
         SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".pdf"}
         if renamed_path.suffix.lower() not in SUPPORTED_EXTS:
             ext = _detect_extension(renamed_path)
@@ -341,7 +346,7 @@ def _process_file(
             renamed_path = fixed_path
             logger.info("Fixed missing extension: %s", renamed_path)
 
-        # 2. Look up user name
+        # 3. Look up user name
         user_name = client.get_user_name(open_id, user_id_type="open_id")
         if not user_name:
             user_name = "未知用户"
@@ -363,10 +368,20 @@ def _process_file(
             client.reply_text(message_id, "创建归档文件夹失败，请稍后重试。")
             return False
 
+        # 3.5 Ensure date sub-folder exists (YYYY-MM-DD)
+        today_str = datetime.date.today().isoformat()
+        date_folder_token = client.get_or_create_sub_folder(
+            parent_token=sub_folder_token,
+            folder_name=today_str,
+        )
+        if date_folder_token is None:
+            client.reply_text(message_id, "创建日期文件夹失败，请稍后重试。")
+            return False
+
         # 4. Upload to cloud docs
         uploaded_token = client.upload_file_to_folder(
             local_path=renamed_path,
-            folder_token=sub_folder_token,
+            folder_token=date_folder_token,
             file_name=renamed_path.name,
         )
         if uploaded_token is None:
@@ -382,6 +397,7 @@ def _process_file(
             f"✅ 处理完成！\n"
             f"文件名：{renamed_path.name}\n"
             f"归档用户：{user_name}\n"
+            f"归档日期：{today_str}\n"
             f"已上传至云文档对应文件夹。\n\n"
             f"您还可以继续发送文件，或发送「结束」退出对话。",
         )
@@ -414,6 +430,28 @@ def _handle_text(open_id: str, message_id: str, text: str) -> None:
             if open_id in pending_sessions:
                 del pending_sessions[open_id]
         client.reply_text(message_id, "对话已结束。如需再次使用，请发送「重命名」。")
+        return
+
+    # "帮助" / "help" → usage guide
+    if "帮助" in text_stripped or "help" in lower:
+        client.reply_text(
+            message_id,
+            "📖 使用指南\n"
+            "━━━━━━━━━━━━━━\n"
+            "1️⃣ 发送「重命名」开始对话\n"
+            "2️⃣ 直接发送需要归档的文件（支持 pdf / jpg / png / gif / webp / bmp / tiff）\n"
+            "3️⃣ 机器人会自动 OCR 识别内容，AI 分析并提取：\n"
+            "   • 物品名称\n"
+            "   • 文档类型（发票 / 收据 / 付款截图）\n"
+            "   • 金额\n"
+            "4️⃣ 自动重命名并上传到云文档，按「用户姓名 / 日期」归档\n"
+            "5️⃣ 如果自动识别失败，请手动回复：\n"
+            "   物品名称 文档类型 金额\n"
+            "   例如：办公用品 发票 128.50\n"
+            "6️⃣ 发送「结束」退出对话\n"
+            "━━━━━━━━━━━━━━\n"
+            "⏱ 对话有效期：5 分钟无操作自动结束",
+        )
         return
 
     # "重命名" → start / reset session

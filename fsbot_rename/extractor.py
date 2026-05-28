@@ -57,7 +57,8 @@ def extract_info(file_path: Path, original_name: str) -> Optional[Tuple[str, str
 # PDF extraction (rule-based)
 # ---------------------------------------------------------------------------
 
-def _extract_from_pdf(path: Path) -> Optional[Tuple[str, str, str]]:
+def _extract_pdf_text(path: Path) -> str:
+    """Extract raw text from a PDF via pdfplumber."""
     try:
         text = ""
         with pdfplumber.open(path) as pdf:
@@ -65,16 +66,20 @@ def _extract_from_pdf(path: Path) -> Optional[Tuple[str, str, str]]:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
-
-        if not text.strip():
-            return None
-
-        amount = _extract_amount_from_text(text)
-        doc_type = _extract_doc_type_from_text(text)
-        item_name = _extract_item_name_from_text(text)
-        return item_name, doc_type, amount
+        return text.strip()
     except Exception:
+        return ""
+
+
+def _extract_from_pdf(path: Path) -> Optional[Tuple[str, str, str]]:
+    text = _extract_pdf_text(path)
+    if not text:
         return None
+
+    amount = _extract_amount_from_text(text)
+    doc_type = _extract_doc_type_from_text(text)
+    item_name = _extract_item_name_from_text(text)
+    return item_name, doc_type, amount
 
 
 def _extract_amount_from_text(text: str) -> str:
@@ -253,13 +258,15 @@ def _extract_with_deepseek(ocr_text: str, original_name: str, attempt: int = 1) 
             )
 
         prompt = (
-            "以下是从一张发票或付款截图中通过OCR提取出的文字内容，以及原始文件名。"
+            "以下是从一张发票、收据、付款截图或电商订单中通过OCR提取出的文字内容，以及原始文件名。"
             "请分析并提取以下三个信息：\n\n"
             f"{attempt_hint}"
             f"OCR文字内容：\n{ocr_text}\n\n"
             f"原始文件名：{original_name}\n\n"
             "请提取：\n"
-            '1. item_name: 物品/服务名称或商家名称。如果无法识别请填"未知物品"\n'
+            '1. item_name: 物品/服务/商品名称。优先提取购买的商品名称（如电商订单中的商品标题），'
+            '不要返回店铺名或商家名称。如果名称超过10个字，请简化为10个字以内的短名称，'
+            '保留核心品牌/商品关键词。如果无法识别请填"未知物品"\n'
             '2. doc_type: 文档类型，只能是以下之一：发票、收据、付款截图。如果无法识别请填"付款截图"\n'
             '3. amount: 金额数字，只保留数字和小数点，不要货币符号。如果无法识别请填0\n\n'
             '请以严格JSON格式返回，不要添加任何解释或markdown标记：\n'
@@ -313,6 +320,14 @@ def reextract_image(path: Path, original_name: str, attempt: int = 1) -> Optiona
     if not ocr_text:
         return None
     return _extract_with_deepseek(ocr_text, original_name, attempt)
+
+
+def reextract_pdf(path: Path, original_name: str, attempt: int = 1) -> Optional[Tuple[str, str, str]]:
+    """Re-extract info from PDF text + DeepSeek (used after validation failure)."""
+    text = _extract_pdf_text(path)
+    if not text:
+        return _extract_from_pdf(path)  # fallback to rule-based
+    return _extract_with_deepseek(text, original_name, attempt)
 
 
 def _extract_from_image(path: Path, original_name: str) -> Optional[Tuple[str, str, str]]:
@@ -447,10 +462,11 @@ def _extract_with_openai(path: Path) -> Optional[Tuple[str, str, str]]:
     mime = mime_map.get(ext, "image/jpeg")
 
     prompt = (
-        "请分析这张图片。它通常是一张发票、收据或付款截图。"
+        "请分析这张图片。它通常是一张发票、收据、付款截图或电商订单。"
         "提取以下三个信息，并以严格JSON格式返回，不要添加任何解释或markdown标记：\n"
         "{\n"
-        '  "item_name": "物品/服务名称或商家名称。如果无法识别请填未知物品",\n'
+        '  "item_name": "物品/服务/商品名称。优先提取购买的商品名称（如电商订单中的商品标题），'
+        '不要返回店铺名或商家名称。如果无法识别请填未知物品",\n'
         '  "doc_type": "文档类型，只能是以下之一：发票、收据、付款截图。如果无法识别请填付款截图",\n'
         '  "amount": "金额数字，只保留数字和小数点，不要货币符号。如果无法识别请填0"\n'
         "}"
