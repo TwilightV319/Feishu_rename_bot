@@ -69,9 +69,28 @@ client = LarkClientWrapper()
 pending_sessions: dict[str, dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
+# Deduplication cache for message IDs to prevent duplicate processing
+_processed_message_ids: set[str] = set()
+_MAX_PROCESSED_IDS = 1000  # limit to prevent unbounded memory growth
+_dedup_lock = threading.Lock()
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _is_duplicate_message(message_id: str) -> bool:
+    """Check if a message has already been processed; if not, record it."""
+    if not message_id:
+        return False
+    with _dedup_lock:
+        if message_id in _processed_message_ids:
+            return True
+        _processed_message_ids.add(message_id)
+        # Prevent unbounded growth
+        if len(_processed_message_ids) > _MAX_PROCESSED_IDS:
+            _processed_message_ids.clear()
+        return False
+
 
 def _clean_expired_sessions() -> None:
     """Remove sessions that have exceeded the timeout."""
@@ -518,11 +537,7 @@ def _handle_file_message(
         # Inform user of extracted info before uploading
         client.reply_text(
             message_id,
-            f"📎 收到文件，自动识别结果：\n"
-            f"物品：{item_name}\n"
-            f"类型：{doc_type}\n"
-            f"金额：{amount}\n\n"
-            f"正在归档并上传…",
+            f"📎 收到文件，正在归档并上传…"
         )
 
         success = _process_file(
@@ -582,6 +597,11 @@ def _on_im_message_receive_v1(event: P2ImMessageReceiveV1) -> None:
     message_id = msg.message_id or ""
 
     logger.debug("Received message from %s: type=%s", open_id, message_type)
+
+    # Deduplication: ignore duplicate message deliveries
+    if _is_duplicate_message(message_id):
+        logger.info("Duplicate message %s ignored", message_id)
+        return
 
     # Text messages
     if message_type == "text":
