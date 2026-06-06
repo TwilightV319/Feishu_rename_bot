@@ -71,8 +71,9 @@ pending_sessions: dict[str, dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
 # Deduplication cache for message IDs to prevent duplicate processing
-_processed_message_ids: set[str] = set()
-_MAX_PROCESSED_IDS = 1000  # limit to prevent unbounded memory growth
+# Using dict as an ordered set (insertion order preserved in Python 3.7+)
+_processed_message_ids: dict[str, None] = {}
+_MAX_PROCESSED_IDS = 10000  # keep last 10k messages (~few days of traffic)
 _dedup_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -86,10 +87,11 @@ def _is_duplicate_message(message_id: str) -> bool:
     with _dedup_lock:
         if message_id in _processed_message_ids:
             return True
-        _processed_message_ids.add(message_id)
-        # Prevent unbounded growth
+        _processed_message_ids[message_id] = None
+        # Remove oldest entry to prevent unbounded growth
         if len(_processed_message_ids) > _MAX_PROCESSED_IDS:
-            _processed_message_ids.clear()
+            oldest = next(iter(_processed_message_ids))
+            del _processed_message_ids[oldest]
         return False
 
 
