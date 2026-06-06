@@ -1,2 +1,26 @@
-# Feishu_rename_bot
-A feishu bot which can automatically read pdf and jpg etc. to find the name of the object,the cost and the type of the picture(receipt,screenshot,invoice etc.)and place them into the cloud storage of feishuby person and date.
+# Feishu Rename Bot（飞书文件重命名机器人）
+
+一个基于飞书（Lark）的自动化归档机器人，支持通过 IM 对话接收文件，自动识别内容并重命名后归档到飞书云文档。
+
+## 主要功能
+
+- **智能识别**：支持 PDF 及常见图片格式（jpg / png / gif / webp / bmp / tiff），自动提取物品名称、文档类型与金额
+- **AI 分析**：OCR + DeepSeek / OpenAI Vision 分析文件内容，对图片和 PDF 均提供 AI 验证与重试机制
+- **自动重命名**：按 `物品名称_文档类型_金额.扩展名` 格式统一命名
+- **按人按日归档**：在云文档中按「用户姓名 / 日期」自动创建文件夹并上传
+- **对话式交互**：发送「重命名」开启对话，支持单轮多次发文件，发送「结束」或超时自动关闭
+
+## 快速开始
+
+1. 配置 `.env`：填写飞书应用凭证（`APP_ID`、`APP_SECRET`）、`FOLDER_TOKEN`（目标云文档文件夹），以及可选的 DeepSeek / OpenAI API Key
+2. 安装依赖：`pip install -r requirements.txt`
+3. 启动机器人：`python bot.py`
+4. 在飞书中向机器人发送「重命名」，随后直接发送需要归档的文件即可
+
+## 支持的文档类型
+
+| 类型 | 说明 |
+|------|------|
+| 发票 | PDF 及电子发票图片 |
+| 收据 | 纸质收据扫描件 |
+| 付款截图 | 支付宝、微信、京东、淘宝等支付/订单截图 |
